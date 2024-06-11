@@ -1,0 +1,105 @@
+#include <torch/torch.h>
+#include <iostream>
+
+#include <torch/torch.h>
+
+struct ConvVAE : torch::nn::Module {
+    torch::nn::Conv2d conv1{nullptr}, conv2{nullptr};
+    torch::nn::ConvTranspose2d deconv1{nullptr}, deconv2{nullptr};
+    torch::nn::Linear fc1{nullptr}, fc2{nullptr}, fc21{nullptr}, fc22{nullptr}, fc3{nullptr}, fc4{nullptr};
+
+    ConvVAE() {
+        // Initialize layers
+        conv1 = register_module("conv1", torch::nn::Conv2d(torch::nn::Conv2dOptions(1, 16, 3).stride(2).padding(1)));
+        conv2 = register_module("conv2", torch::nn::Conv2d(torch::nn::Conv2dOptions(16, 32, 3).stride(2).padding(1)));
+        fc1 = register_module("fc1", torch::nn::Linear(32 * 7 * 7, 15000));
+        fc2 = register_module("fc2", torch::nn::Linear(15000, 15000));
+        fc21 = register_module("fc21", torch::nn::Linear(15000, 2));  // Assuming latent_dim is 2
+        fc22 = register_module("fc22", torch::nn::Linear(15000, 2));
+        fc3 = register_module("fc3", torch::nn::Linear(2, 15000));
+        fc4 = register_module("fc4", torch::nn::Linear(15000, 32 * 7 * 7));
+        deconv1 = register_module("deconv1", torch::nn::ConvTranspose2d(torch::nn::ConvTranspose2dOptions(32, 16, 3).stride(2).padding(1).output_padding(1)));
+        deconv2 = register_module("deconv2", torch::nn::ConvTranspose2d(torch::nn::ConvTranspose2dOptions(16, 1, 3).stride(2).padding(1).output_padding(1)));
+    }
+
+    std::pair<torch::Tensor, torch::Tensor> encode(const torch::Tensor& x) {
+        auto h = torch::relu(conv1->forward(x));
+        h = torch::relu(conv2->forward(h));
+        h = h.view({-1, 32 * 7 * 7});
+        h = torch::relu(fc1->forward(h));
+        h = torch::relu(fc2->forward(h));
+        return {fc21->forward(h), fc22->forward(h)};
+    }
+
+    torch::Tensor reparameterize(const torch::Tensor& mu, const torch::Tensor& logvar) {
+        auto std = torch::exp(0.5 * logvar);
+        auto eps = torch::randn_like(std);
+        return mu + eps * std;
+    }
+
+    torch::Tensor decode(const torch::Tensor& z) {
+        auto h = torch::relu(fc3->forward(z));
+        h = torch::relu(fc4->forward(h));
+        h = h.view({-1, 32, 7, 7});
+        h = torch::relu(deconv1->forward(h));
+        return torch::sigmoid(deconv2->forward(h));
+    }
+
+    torch::Tensor forward(const torch::Tensor& x) {
+        auto [mu, logvar] = encode(x);
+        auto z = reparameterize(mu, logvar);
+        return decode(z);
+    }
+};
+
+
+Loss function
+
+struct VAELoss {
+    torch::Tensor operator()(const torch::Tensor& recon_x, const torch::Tensor& x, const torch::Tensor& mu, const torch::Tensor& logvar) {
+        auto BCE = torch::binary_cross_entropy(recon_x, x, torch::Reduction::Sum);
+        auto KLD = -0.5 * torch::sum(1 + logvar - mu.pow(2) - logvar.exp());
+        return BCE + KLD;
+    }
+};
+
+Data Loading
+
+auto data_loader = torch::data::make_data_loader(
+    torch::data::datasets::ANY DATASET("./data").map(torch::data::transforms::Normalize<>(0.5, 0.5)).map(torch::data::transforms::Stack<>()),
+    /*batch_size=*/64);
+int main() {
+    auto model = std::make_shared<ConvVAE>();
+    torch::optim::Adam optimizer(model->parameters(), torch::optim::AdamOptions(1e-3));
+    VAELoss vae_loss;
+
+    for (size_t epoch = 1; epoch <= 50; ++epoch) {
+        model->train();
+        float loss = 0.0;
+        size_t batch_index = 0;
+
+        for (auto& batch : *data_loader) {
+            auto data = batch.data.view({-1, 1, 28, 28});
+            optimizer.zero_grad();
+            auto outputs = model->forward(data);
+            auto train_loss = vae_loss(outputs.reconstruction, data, outputs.mu, outputs.logvar);
+            train_loss.backward();
+            optimizer.step();
+
+            loss += train_loss.item<float>();
+            if (++batch_index % 100 == 0) {
+                std::cout << "Train Epoch: " << epoch << " [" << batch_index * 64 << "/" << 60000
+                          << " (" << static_cast<float>(batch_index * 64) / 60000 * 100.0 << "%)]\tLoss: "
+                          << train_loss.item<float>() / data.size(0) << std::endl;
+            }
+        }
+
+        std::cout << "=> Epoch: " << epoch << " Average Loss: " << loss / 60000 << std::endl;
+    }
+
+    std::cout << "Training complete." << std::endl;
+    return 0;
+}
+
+
+Notes - Compilation & Execution - g++ -std=c++14 train_vae.cpp -o train_vae `pkg-config --cflags --libs libtorch`
