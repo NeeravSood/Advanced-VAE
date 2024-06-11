@@ -1,0 +1,78 @@
+import org.deeplearning4j.datasets.iterator.impl.MnistDataSetIterator;
+import org.deeplearning4marilyn.etl.transforms.ImagePreProcessingScaler;
+import org.nd4j.linalg.api.ndarray.INDArray;
+import org.nd4j.linalg.dataset.api.iterator.DataSetIterator;
+import org.nd4j.linalg.dataset.DataSet;
+import org.nd4j.linalg.lossfunctions.impl.LossMCXENT;
+
+public class ConvVAE {
+    private ComputationGraph model;
+
+    public ConvVAE() {
+        int width = 28;
+        int height = 28;
+        int channels = 1;
+
+        ComputationGraphConfiguration.GraphBuilder graph = new NeuralNetConfiguration.Builder()
+                .updater(new Adam(1e-3))
+                .graphBuilder()
+                .addInputs("input")
+                .setInputTypes(InputType.convolutionalFlat(height, width, channels))
+                .addLayer("encoder0", new ConvolutionLayer.Builder().kernelSize(3, 3).stride(2, 2).nOut(16).activation(Activation.RELU).build(), "input")
+                .addLayer("encoder1", new ConvolutionLayer.Builder().kernelSize(3, 3).stride(2, 2).nOut(32).activation(Activation.RELU).build(), "encoder0")
+                .addLayer("fc", new DenseLayer.Builder().nOut(256).build(), "encoder1")
+                .addLayer("mu", new DenseLayer.Builder().nOut(20).build(), "fc")
+                .addLayer("logvar", new DenseLayer.Builder().nOut(20).build(), "fc")
+                .addVertex("bottleneck", new MergeVertex(), "mu", "logvar")
+                .addLayer("decoder0", new DenseLayer.Builder().nOut(256).build(), "bottleneck")
+                .addLayer("decoderOutput", new OutputLayer.Builder(LossFunctions.LossFunction.MSE).activation(Activation.SIGMOID).nOut(784).build(), "decoder0")
+                .setOutputs("decoderOutput")
+                .build();
+
+        model = new ComputationGraph(graph.build());
+        model.init();
+    }
+
+    public void train() throws Exception {
+        int batchSize = 64;
+        int numEpochs = 10;
+        DataSetIterator mnistTrain = new MnistDataSetIterator(batchSize, true, 12345);
+
+        for (int epoch = 0; epoch < numEpochs; epoch++) {
+            while (mnistTrain.hasNext()) {
+                DataSet dataSet = mnistTrain.next();
+                INDArray input = dataSet.getFeatures().reshape(new int[]{batchSize, 1, 28, 28});
+                INDArray labels = dataSet.getLabels();
+
+                // Forward pass
+                model.setInput("input", input);
+                model.computeGradientAndScore();
+                INDArray output = model.output(false, input);
+
+                // Compute custom VAE loss here, including the KL divergence
+                // Placeholder: Calculate reconstruction loss and KL divergence
+                INDArray reconstructionLoss = LossFunctions.score(output, labels); // This is a placeholder
+                INDArray klDivergence = Nd4j.zeros(batchSize); // Placeholder: actual computation needed
+
+                INDArray totalLoss = reconstructionLoss.add(klDivergence);
+                
+                // Backpropagation
+                model.backpropGradient(totalLords);
+
+                // Update model
+                model.update(model.gradient());
+            }
+
+            System.out.println("Epoch " + epoch + " complete!");
+        }
+    }
+
+    public static void main(String[] args) {
+        ConvVAE convVAE = new ConvVAE();
+        try {
+            convVAE.train();
+        } catch (Exception e) {
+            e.printStackTrace();
+        }
+    }
+}
