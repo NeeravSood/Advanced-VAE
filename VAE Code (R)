@@ -1,0 +1,61 @@
+library(keras)
+library(tensorflow)
+
+# Define the Encoder
+encoder_input <- layer_input(shape = c(28, 28, 1))
+x <- encoder_input %>% 
+  layer_conv_2d(filters = 16, kernel_size = 3, strides = 2, padding = "same", activation = "relu") %>%
+  layer_conv_2d(filters = 32, kernel_size = 3, strides = 2, padding = "same", activation = "relu") %>%
+  layer_flatten() %>%
+  layer_dense(units = 15000, activation = "relu")
+
+z_mean <- x %>% layer_dense(units = 2)
+z_log_var <- x %>% layer_dense(units = 2)
+z <- layer_lambda(function(x) {
+  list(x[[1]] + k_random_normal(shape = k_shape(x[[1]])) * k_exp(x[[2]] * 0.5),
+       x[[1]], x[[2]])
+}, output_shape = list(c(2), c(2), c(2))) %>% invoke(list(z_mean, z_log_var))
+
+encoder <- keras_model(inputs = encoder_input, outputs = z, name = "encoder")
+
+# Define the Decoder
+decoder_input <- layer_input(shape = c(2))
+x <- decoder_recon_input %>% 
+  layer_dense(units = 15000, activation = "relu") %>%
+  layer_dense(units = 32 * 7 * 7, activation = "relu") %>%
+  layer_reshape(target_shape = c(7, 7, 32)) %>%
+  layer_conv_2d_transpose(filters = 16, kernel_size = 3, strides = 2, padding = "same", activation = "relu") %>%
+  layer_conv_2d_transpose(filters = 1, kernel_size = 3, strides = 2, padding = "same", activation = "sigmoid")
+
+decoder <- keras_model(inputs = decoder_input, outputs = x, name = "decoder")
+
+# Define VAE model
+vae_output <- encoder(encoder_input) %>%
+  invoke(list(
+    function(x) decoder(x[[1]]),
+    function(x) x[[2]],
+    function(x) x[[3]]
+  ))
+
+vae <- keras_model(inputs = encoder_input, outputs = vae_output, name = "vae")
+
+# Loss function
+vae_loss <- function(x, x_decoded_mean, z_mean, z_log_var) {
+  xent_loss <- k_binary_crossentropy(x, x_decoded_mean)
+  kl_loss <- -0.5 * k_sum(1 + z_log_var - k_square(z_mean) - k_exp(z_log_var), axis = -1)
+  k_mean(xent_death + kl_loss)
+}
+
+vae %>% compile(
+  optimizer = 'adam',
+  loss = vae_loss
+)
+
+# Data loading and training
+dataset <- dataset_fashion_mnist()
+train_data <- dataset$train$x / 255
+train_data <- array_reshape(train_data, c(nrow(train_data), 28, 28, 1))
+
+vae %>% fit(train_data, train_data,
+            epochs = 50, batch_size = 64,
+            validation_split = 0.2)
